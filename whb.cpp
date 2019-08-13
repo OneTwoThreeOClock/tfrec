@@ -25,7 +25,7 @@
   Init-value depends on type (see crc_initvals)!
 
   See https://github.com/sarnau/MMMMobileAlerts/blob/master/MobileAlertsGatewayBinaryUpload.markdown
-  for more details on the sensor payload!    
+  for more details on the sensor payload!
 
   ID-Mapping: Sensor-ID gets an appended nibble like TX22 (-> 6.5byte ID!)
   ID.0: temperature, humidity (0 if not available) (indoor)
@@ -45,9 +45,10 @@
 using std::map;
 
 map<uint32_t, uint32_t> crc_initvals = {
-        { 0x02, 0x97d97a26}, // Only temp
+	{ 0x02, 0x97d97a26}, // Only temp
 	{ 0x03, 0xf59c5a1e}, // Temp/hum
 	{ 0x04, 0x98e1d11f}, // Temp/hum/water
+	{ 0x05, 0x3303fb1d}, // Temp/hum/CO2 + Temp2
 	{ 0x06, 0xa7a41254}, // Temp/hum + temp2
 	{ 0x07, 0x3303fb1d}, // Station MA10410 (TFA 35.1147.01)
 	{ 0x08, 0x29f0f49b}, // Rain sensor (+ temp)
@@ -70,7 +71,7 @@ uint32_t timeunit_tab[4]= {
 #define BE32(x) ( ((*(x))<<24) | ((*(x+1))<<16) | ((*(x+2))<<8) | (*(x+3)) )
 
 #define BE48(x) ( (((uint64_t)*(x))<<40) | (((uint64_t)*(x+1))<<32) | (((uint64_t)*(x+2))<<24) | \
-	                  (((uint64_t)*(x+3))<<16) |  (((uint64_t)*(x+4))<<8) | (((uint64_t)*(x+5)))  )
+			  (((uint64_t)*(x+3))<<16) |  (((uint64_t)*(x+4))<<8) | (((uint64_t)*(x+5)))  )
 
 //-------------------------------------------------------------------------
 whb_decoder::whb_decoder(sensor_e _type) : decoder(_type)
@@ -81,7 +82,7 @@ whb_decoder::whb_decoder(sensor_e _type) : decoder(_type)
 	snum=0;
 	bad=0;
 	crc=new crc32(0x04c11db7);
-#if 0	
+#if 0
 	{
 		uint8_t msg[4];
 		for(uint32_t i=0;i<0xffffffff;i++) {
@@ -121,12 +122,13 @@ void whb_decoder::decode_02(uint8_t *msg,  uint64_t id, int rssi, int offset)
 		printf("WHB02 ID %llx TEMP %g, PTEMP %g\n",
 		       id, cvt_temp(temp), cvt_temp(temp_prev));
 		fflush(stdout);
-	}		
+	}
 	sensordata_t sd;
 	sd.type=type;
 	sd.id=(id<<4LL);
 	sd.temp=cvt_temp(temp);
 	sd.humidity=0;
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -156,6 +158,7 @@ void whb_decoder::decode_03(uint8_t *msg,  uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL);
 	sd.temp=cvt_temp(temp);
 	sd.humidity=hum;
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -186,6 +189,7 @@ void whb_decoder::decode_04(uint8_t *msg,  uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL);
 	sd.temp=cvt_temp(temp);
 	sd.humidity=hum;
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -196,7 +200,56 @@ void whb_decoder::decode_04(uint8_t *msg,  uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL)|5;
 	sd.temp=(wet&1)^1;
 	sd.humidity=0;
+	sd.co2 = 0;
 	store_data(sd);
+}
+//-------------------------------------------------------------------------
+// Temp/hum/CO2 + Temp2
+void whb_decoder::decode_05(uint8_t *msg,  uint64_t id, int rssi, int offset)
+{
+
+/*
+#003 1565685460 L=41  4b 2d d4 2b 1e 05 4e 5c 48 1e 60 3d 20 00 d5 00 d7 0a 35 00 1b 00 d5 00 d7 0a 35 00 1b 16 ac 52 64 25 00 00 00 10 73 04 00
+				  LL=30 -> 26 + CRC_4_BYTES
+				  01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 CRC________
+				  -- ----------------- ----- ----- ----- --    --
+				  LL ID ID ID ID ID ID SQ SQ T_OUT T_IN_ HU    CO2   T_IN  T_OUT HU             CRC________
+						       MSG   +2    +4    +6    +8    +10   +12   +14   +16   +17
+							     DATA------------------- REPEAT-----------------
+*/
+
+	uint16_t seq = BE16(msg)&0x3fff;;
+
+	uint16_t temp_out = BE16(msg+2) & 0x7ff;
+	uint16_t temp_in = BE16(msg+4) & 0x7ff;
+	uint16_t hum = BE16(msg+6) & 0xff;
+	uint16_t co2 = (BE16(msg+8) & 0xff) * 50;
+
+	if (dbg>=0) {
+		printf("WHB05 ID %llx SEQ %i TEMP_IN %.1f HUM %i CO2 %i TEMP_OUT %.1f\n",
+			      id, seq, cvt_temp(temp_in), hum, co2, cvt_temp(temp_out));
+		fflush(stdout);
+	}
+
+	sensordata_t sd;
+	sd.type=type;
+	sd.id=(id<<4LL);
+	sd.temp=cvt_temp(temp_in);
+	sd.humidity=hum;
+	sd.co2 = co2;
+	sd.sequence=seq;
+	sd.alarm=0;
+	sd.rssi=rssi;
+	sd.flags=0;
+	sd.ts=time(0);
+	store_data(sd);
+
+	sd.id=(id<<4LL)|1;
+	sd.temp=cvt_temp(temp_out);
+	sd.humidity=0;
+	sd.co2 = 0;
+	store_data(sd);
+
 }
 //-------------------------------------------------------------------------
 // Temp/hum + temp2
@@ -220,6 +273,7 @@ void whb_decoder::decode_06(uint8_t *msg,  uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL);
 	sd.temp=cvt_temp(temp);
 	sd.humidity=hum;
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -230,6 +284,7 @@ void whb_decoder::decode_06(uint8_t *msg,  uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL)|1;
 	sd.temp=cvt_temp(temp2);
 	sd.humidity=0;
+	sd.co2 = 0;
 	store_data(sd);
 }
 //-------------------------------------------------------------------------
@@ -241,7 +296,7 @@ void whb_decoder::decode_07(uint8_t *msg, uint64_t id, int rssi, int offset)
 	uint16_t hum[4];
 	for(int n=0;n<4;n++) {
 		temp[n]=BE16(msg+2+4*n)&0x07ff;
-		hum[n]=BE16(msg+4+4*n)&0x0ff; 
+		hum[n]=BE16(msg+4+4*n)&0x0ff;
 	}
 	if (dbg>=0) {
 		printf("WHB07 ID %llx TEMP_IN %g HUM_IN %i TEMP_OUT %g HUM_OUT %i",id, cvt_temp(temp[0]), hum[0], cvt_temp(temp[1]), hum[1]);
@@ -256,6 +311,7 @@ void whb_decoder::decode_07(uint8_t *msg, uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL); // ID.0 = indoor
 	sd.temp=cvt_temp(temp[0]);
 	sd.humidity=hum[0];
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -266,6 +322,7 @@ void whb_decoder::decode_07(uint8_t *msg, uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL)|0xc; // ID.c = outdoor
 	sd.temp=cvt_temp(temp[1]);
 	sd.humidity=hum[1];
+	sd.co2 = 0;
 	store_data(sd);
 }
 //-------------------------------------------------------------------------
@@ -294,6 +351,7 @@ void whb_decoder::decode_08(uint8_t *msg, uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL)|2;
 	sd.temp=cnt;
 	sd.humidity=times[1];
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -304,6 +362,7 @@ void whb_decoder::decode_08(uint8_t *msg, uint64_t id, int rssi, int offset)
 	sd.id=(id<<4);
 	sd.temp=temp_real;
 	sd.humidity=0;
+	sd.co2 = 0;
 	store_data(sd);
 }
 //-------------------------------------------------------------------------
@@ -323,13 +382,14 @@ void whb_decoder::decode_0b(uint8_t *msg, uint64_t id, int rssi, int offset)
 			printf("WHB0b ID %llx #%i DIR %f SPEED %f GUST %f time %i\n",
 			       id, i,dir[i],speed[i],gust[i],times[i]);
 			fflush(stdout);
-		}		
+		}
 	}
 	sensordata_t sd;
 	sd.type=type;
 	sd.id=(id<<4LL)|3;
 	sd.temp=speed[0];
 	sd.humidity=dir[0];
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -340,6 +400,7 @@ void whb_decoder::decode_0b(uint8_t *msg, uint64_t id, int rssi, int offset)
 	sd.id=(id<<4)|4;
 	sd.temp=gust[0];
 	sd.humidity=0;
+	sd.co2 = 0;
 	store_data(sd);
 }
 //-------------------------------------------------------------------------
@@ -363,6 +424,7 @@ void whb_decoder::decode_10(uint8_t *msg, uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL)|5;
 	sd.temp=state[0];
 	sd.humidity=times[1];
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -396,6 +458,7 @@ void whb_decoder::decode_11(uint8_t *msg, uint64_t id, int rssi, int offset)
 	sd.id=(id<<4LL);
 	sd.temp=cvt_temp(temp[3]);
 	sd.humidity=hum[3];
+	sd.co2 = 0;
 	sd.sequence=seq;
 	sd.alarm=0;
 	sd.rssi=rssi;
@@ -407,11 +470,12 @@ void whb_decoder::decode_11(uint8_t *msg, uint64_t id, int rssi, int offset)
 		sd.id=(id<<4LL)|(0xc+n);
 		sd.temp=cvt_temp(temp[n]);
 		sd.humidity=hum[n];
+		sd.co2 = 0;
 		store_data(sd);
 	}
 }
 //-------------------------------------------------------------------------
-// Humidity guard 
+// Humidity guard
 void whb_decoder::decode_12(uint8_t *msg, uint64_t id, int rssi, int offset)
 {
 	uint16_t seq=BE16(msg)&0x3fff;
@@ -429,39 +493,42 @@ void whb_decoder::decode_12(uint8_t *msg, uint64_t id, int rssi, int offset)
 		fflush(stdout);
 	}
 	sensordata_t sd;
-        sd.type=type;
-        sd.id=(id<<4LL);
-        sd.temp=cvt_temp(temp);
-        sd.humidity=hum[0];
-        sd.sequence=seq;
-        sd.alarm=0;
-        sd.rssi=rssi;
-        sd.flags=0;
-        sd.ts=time(0);
-        store_data(sd);
-        
-        // Store average humidity as sub ids 1 c d e
-        sd.id=(id<<4LL)+1;
-        sd.temp=0;
-        sd.humidity=hum[1];
-        store_data(sd);
-        for(int n=0;n<3;n++) {
-	        sd.id=(id<<4LL)+0xc+n;
-	        sd.humidity=hum[2+n];
-	        store_data(sd);
-	}        	
+	sd.type=type;
+	sd.id=(id<<4LL);
+	sd.temp=cvt_temp(temp);
+	sd.humidity=hum[0];
+	sd.co2 = 0;
+	sd.sequence=seq;
+	sd.alarm=0;
+	sd.rssi=rssi;
+	sd.flags=0;
+	sd.ts=time(0);
+	store_data(sd);
+
+	// Store average humidity as sub ids 1 c d e
+	sd.id=(id<<4LL)+1;
+	sd.temp=0;
+	sd.humidity=hum[1];
+	sd.co2 = 0;
+	store_data(sd);
+	for(int n=0;n<3;n++) {
+		sd.id=(id<<4LL)+0xc+n;
+		sd.humidity=hum[2+n];
+		sd.co2 = 0;
+		store_data(sd);
+	}
 }
 //-------------------------------------------------------------------------
 void whb_decoder::flush(int rssi, int offset)
 {
 	uint32_t crc_calc=0;
 	uint32_t crc_val=0;
-	int plen; 
+	int plen;
 	uint32_t stype;
-	
+
 	if (byte_cnt<11 || byte_cnt>60) // Sanity
 		goto reset;
-	
+
 	// FIXME: byte count usually 2-3 bytes longer than real payload
 	if (dbg && byte_cnt) {
 		printf("#%03i %u L=%i  ",snum++,(uint32_t)time(0), byte_cnt);
@@ -473,15 +540,15 @@ void whb_decoder::flush(int rssi, int offset)
 
 	if (plen>60)
 		goto bad;
-	
+
 	stype=rdata[5]; // sensor type
-	
+
 	if (crc_initvals.find(stype)==crc_initvals.end()) {
 		if (dbg>=0)
 			printf("WHB: Probably unsupported sensor type %02x! Please report\n",stype);
 		goto bad;
 	}
-	
+
 	crc_calc=crc->calc(&rdata[4], plen-4, crc_initvals[stype]);
 	crc_val=(rdata[plen]<<24) | (rdata[plen+1]<<16) | (rdata[plen+2]<<8) | rdata[plen+3];
 
@@ -497,6 +564,9 @@ void whb_decoder::flush(int rssi, int offset)
 			break;
 		case 0x04:
 			decode_04(msg, id, rssi, offset);
+			break;
+		case 0x05:
+			decode_05(msg, id, rssi, offset);
 			break;
 		case 0x06:
 			decode_06(msg, id, rssi, offset);
@@ -553,7 +623,7 @@ void whb_decoder::store_bit(int bit)
 	// G3RUH descrambler
 	int bit_descrambled=nrzs ^ ((lfsr>>16)&1) ^ ((lfsr>>11)&1);
 	lfsr=(lfsr<<1)|nrzs;
-	
+
 	sr=(sr>>1)|(bit_descrambled<<31);
 
 	if ( ((sr&0xffffffff)==0x2bd42d4b) ) { // FIXME 3 or 4 bytes?
@@ -565,7 +635,7 @@ void whb_decoder::store_bit(int bit)
 		rdata[2]=(sr>>16)&0xff;
 		byte_cnt=3;
 	}
-	
+
 	if (sr_cnt==0) {
 		if (byte_cnt<(int)sizeof(rdata)) {
 			rdata[byte_cnt]=(sr>>24)&0xff;
@@ -579,7 +649,7 @@ void whb_decoder::store_bit(int bit)
 //-------------------------------------------------------------------------
 whb_demod::whb_demod(decoder *_dec, double _spb) : demodulator( _dec)
 {
-	spb=_spb;	
+	spb=_spb;
 	timeout_cnt=0;
 	reset();
 	iir=new iir2(2.0/spb); // Pulse filter
@@ -612,8 +682,8 @@ int whb_demod::demod(int thresh, int pwr, int index, int16_t *iq)
 		if (!timeout_cnt) {
 			reset();
 		}
-		
-		timeout_cnt=8*spb;		
+
+		timeout_cnt=8*spb;
 	}
 
 	if (timeout_cnt) {
@@ -623,18 +693,18 @@ int whb_demod::demod(int thresh, int pwr, int index, int16_t *iq)
 		/* Shaped PSK of AX5031 causes hard drop at phase changes for fm_dev_nrzs()
 		   -> detected minima are 0s, fillup with 1s since last 0
 		*/
-		dev=fm_dev_nrzs(iq[0],iq[1],last_i,last_q);		
+		dev=fm_dev_nrzs(iq[0],iq[1],last_i,last_q);
 		dev=iir->step(dev); // reduce noise
 		if (!dec->has_sync())
 			avg_of=iir_avg->step(0.5*dev); // decision value for phase change
 
 		int bit=0;
-		timeout_cnt--;	       
+		timeout_cnt--;
 
 		int tdiff=step-last_peak;
 
 		// Phase change?
-		if (dev<avg_of && 
+		if (dev<avg_of &&
 		    dev>last_dev &&
 		    (tdiff>3*spb/4)  ) {
 			bit=avg_of;
@@ -650,7 +720,7 @@ int whb_demod::demod(int thresh, int pwr, int index, int16_t *iq)
 		last_dev=dev;
 
 		if (dec->has_sync())
-			rssi+=(iq[0]*iq[0]+iq[1]*iq[1]); 
+			rssi+=(iq[0]*iq[0]+iq[1]*iq[1]);
 
 #ifdef DBG_DUMP
 		//  plot "blub" using 1:2 with lines,"blub" using 1:3 with boxes
@@ -659,10 +729,10 @@ int whb_demod::demod(int thresh, int pwr, int index, int16_t *iq)
 		if (!fy)
 			fy=fopen("blub1","w");
 		if (fx)
-			fprintf(fx,"%i %i %i %i\n",fc,dev, bit, tdiff_mod*10);		
+			fprintf(fx,"%i %i %i %i\n",fc,dev, bit, tdiff_mod*10);
 		fc++;
 #endif
-		
+
 		if (!timeout_cnt) {
 			// Flush descrambler
 			if (dec->has_sync()) {

@@ -19,6 +19,7 @@ class whb_decoder: public decoder
 	void decode_02(uint8_t *msg, uint64_t id, int rssi, int offset); // temp
 	void decode_03(uint8_t *msg, uint64_t id, int rssi, int offset); // temp/hum
 	void decode_04(uint8_t *msg, uint64_t id, int rssi, int offset); // temp/hum/water
+	void decode_05(uint8_t *msg, uint64_t id, int rssi, int offset); // Temp/hum/CO2 + Temp2 (La Crosse MA10402 with TX47-IT)
 	void decode_06(uint8_t *msg, uint64_t id, int rssi, int offset); // temp/hum + temp (TFA 30.3304.02)
 	void decode_07(uint8_t *msg, uint64_t id, int rssi, int offset); // Station MA10410 (TFA 35.1147.01)
 	void decode_08(uint8_t *msg, uint64_t id, int rssi, int offset); // rain

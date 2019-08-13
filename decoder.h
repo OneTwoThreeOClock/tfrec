@@ -22,6 +22,7 @@ typedef struct {
 	sensor_e type;
 	uint64_t id;
 	double temp;
+	double co2;
         double humidity;
 	int alarm;
 	int flags;
